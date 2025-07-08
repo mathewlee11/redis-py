@@ -8,7 +8,7 @@ import redis
 from redis import CrossSlotTransactionError, ConnectionPool, RedisClusterException
 from redis.backoff import NoBackoff
 from redis.client import Redis
-from redis.cluster import PRIMARY, ClusterNode, NodesManager, RedisCluster
+from redis.cluster import PRIMARY, ClusterNode, NodesManager, PipelineCommand, RedisCluster
 from redis.retry import Retry
 
 from .conftest import skip_if_server_version_lt
@@ -396,3 +396,13 @@ class TestClusterTransaction:
 
             assert not pipe._execution_strategy._watching
             assert not pipe.command_stack
+    
+    @pytest.mark.onlycluster
+    async def test_pipeline_command_stack(self, r) -> None:
+        async with r.pipeline(transaction=True) as tx:
+            tx.set("foo", "value1")
+            tx.set("baz", "value2")
+
+            assert len(tx.command_stack) == 2
+            assert tx.command_stack[0] == PipelineCommand(command="SET", args=["foo", "value1"])
+            assert tx.command_stack[1] == PipelineCommand(command="SET", args=["baz", "value2"])
