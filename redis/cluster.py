@@ -2148,6 +2148,7 @@ class ClusterPipeline(RedisCluster):
         **kwargs,
     ):
         """ """
+        self.command_stack = []
         self.nodes_manager = nodes_manager
         self.commands_parser = commands_parser
         self.refresh_table_asap = False
@@ -2181,10 +2182,6 @@ class ClusterPipeline(RedisCluster):
         self._execution_strategy: ExecutionStrategy = (
             PipelineStrategy(self) if not transaction else TransactionStrategy(self)
         )
-
-    @property
-    def command_stack(self):
-        return self._execution_strategy.command_queue
 
     def __repr__(self):
         """ """
