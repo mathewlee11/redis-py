@@ -2203,7 +2203,7 @@ class ClusterPipeline(RedisCluster):
 
     def __len__(self):
         """ """
-        return len(self._execution_strategy.command_queue)
+        return len(self.command_stack)
 
     def __bool__(self):
         "Pipeline instances should  always evaluate to True on Python 3+"
@@ -2475,10 +2475,6 @@ class NodeCommands:
 
 
 class ExecutionStrategy(ABC):
-    @property
-    @abstractmethod
-    def command_queue(self):
-        pass
 
     @abstractmethod
     def execute_command(self, *args, **kwargs):
@@ -2602,26 +2598,16 @@ class AbstractStrategy(ExecutionStrategy):
         self,
         pipe: ClusterPipeline,
     ):
-        self._command_queue: List[PipelineCommand] = []
         self._pipe = pipe
         self._nodes_manager = self._pipe.nodes_manager
 
-    @property
-    def command_queue(self):
-        return self._command_queue
-
-    @command_queue.setter
-    def command_queue(self, queue: List[PipelineCommand]):
-        self._command_queue = queue
 
     @abstractmethod
     def execute_command(self, *args, **kwargs):
         pass
 
     def pipeline_execute_command(self, *args, **options):
-        self._command_queue.append(
-            PipelineCommand(args, options, len(self._command_queue))
-        )
+        self._pipe.command_stack.append(PipelineCommand(args, options, len(self._pipe.command_stack)))
         return self._pipe
 
     @abstractmethod
@@ -2686,7 +2672,7 @@ class PipelineStrategy(AbstractStrategy):
                 raise r
 
     def execute(self, raise_on_error: bool = True) -> List[Any]:
-        stack = self._command_queue
+        stack = self._pipe.command_stack
         if not stack:
             return []
 
@@ -2699,7 +2685,7 @@ class PipelineStrategy(AbstractStrategy):
         """
         Reset back to empty pipeline.
         """
-        self._command_queue = []
+        self._pipe.command_stack.clear()
 
     def send_cluster_commands(
         self, stack, raise_on_error=True, allow_redirections=True
@@ -3168,7 +3154,7 @@ class TransactionStrategy(AbstractStrategy):
                 raise r
 
     def execute(self, raise_on_error: bool = True) -> List[Any]:
-        stack = self._command_queue
+        stack = self._pipe.command_stack
         if not stack and (not self._watching or not self._pipeline_slots):
             return []
 
@@ -3218,7 +3204,7 @@ class TransactionStrategy(AbstractStrategy):
             raise
 
         # and all the other commands
-        for i, command in enumerate(self._command_queue):
+        for i, command in enumerate(self._pipe.command_stack):
             if EMPTY_RESPONSE in command.options:
                 errors.append((i, command.options[EMPTY_RESPONSE]))
             else:
@@ -3255,11 +3241,11 @@ class TransactionStrategy(AbstractStrategy):
         for i, e in errors:
             response.insert(i, e)
 
-        if len(response) != len(self._command_queue):
+        if len(response) != len(self._pipe.command_stack):
             raise InvalidPipelineStack(
                 "Unexpected response length for cluster pipeline EXEC."
                 " Command stack was {} but response had length {}".format(
-                    [c.args[0] for c in self._command_queue], len(response)
+                    [c.args[0] for c in self._pipe.command_stack], len(response)
                 )
             )
 
@@ -3267,12 +3253,12 @@ class TransactionStrategy(AbstractStrategy):
         if raise_on_error or len(errors) > 0:
             self._raise_first_error(
                 response,
-                self._command_queue,
+                self._pipe.command_stack,
             )
 
         # We have to run response callbacks manually
         data = []
-        for r, cmd in zip(response, self._command_queue):
+        for r, cmd in zip(response, self._pipe.command_stack):
             if not isinstance(r, Exception):
                 command_name = cmd.args[0]
                 if command_name in self._pipe.cluster_response_callbacks:
@@ -3283,7 +3269,7 @@ class TransactionStrategy(AbstractStrategy):
         return data
 
     def reset(self):
-        self._command_queue = []
+        self._pipe.command_stack.clear()
 
         # make sure to reset the connection state in the event that we were
         # watching something
@@ -3324,7 +3310,7 @@ class TransactionStrategy(AbstractStrategy):
     def multi(self):
         if self._explicit_transaction:
             raise RedisError("Cannot issue nested calls to MULTI")
-        if self._command_queue:
+        if self._pipe.command_stack:
             raise RedisError(
                 "Commands without an initial WATCH have already been issued"
             )
